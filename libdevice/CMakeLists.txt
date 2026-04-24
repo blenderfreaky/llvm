@@ -1,10 +1,17 @@
 # Utility project providing various functionalities for SPIR-V devices
 # without native support of these functionalities.
 
+cmake_minimum_required(VERSION 3.20)
+
 set(CMAKE_MODULE_PATH
   ${CMAKE_MODULE_PATH}
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules"
   )
+
+if(NOT LLVM_MAIN_SRC_DIR)
+  find_package(LLVM REQUIRED CONFIG)
+  include(AddLLVM)
+endif()
 
 set(UR_INTREE_SOURCE_DIR "${LLVM_SOURCE_DIR}/../unified-runtime")
 cmake_path(NORMAL_PATH UR_INTREE_SOURCE_DIR OUTPUT_VARIABLE UR_INTREE_SOURCE_DIR)
@@ -35,7 +42,7 @@ if(NOT EXISTS ${LIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR})
   get_host_tool_path(sycl-post-link SYCL_POST_LINK sycl-post-link_exe sycl-post-link_target)
   get_host_tool_path(llvm-link LLVM_LINK llvm-link_exe llvm-link_target)
 else()
-  foreach(tool IN ITEMS clang llvm-ar append-file clang-offload-bundler llvm-offload-binary file-table-tform llvm-foreach llvm-spirv sycl-post-link llvm-link)
+  foreach(tool IN ITEMS clang llvm-ar append-file clang-offload-bundler llvm-offload-binary file-table-tform llvm-foreach llvm-spirv sycl-post-link llvm-link opt)
     find_program(LLVM_CUSTOM_TOOL_${tool} ${tool}
       PATHS ${LIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR} NO_DEFAULT_PATH)
     set(${tool}_exe ${LLVM_CUSTOM_TOOL_${tool}})

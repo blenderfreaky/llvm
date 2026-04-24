@@ -1,4 +1,10 @@
 include(CheckCXXCompilerFlag)
+
+if(NOT LLVM_MAIN_SRC_DIR)
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif()
+
 set(obj_binary_dir "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 if (MSVC)
   set(devicelib_host_static_obj sycl-devicelib-host.lib)
@@ -65,7 +71,11 @@ if (WIN32)
   list(APPEND compile_opts -D_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH)
 endif()
 
-add_custom_target(libsycldevice)
+if(NOT LLVM_MAIN_SRC_DIR)
+  add_custom_target(libsycldevice ALL)
+else()
+  add_custom_target(libsycldevice)
+endif()
 
 set(filetypes bc)
 
@@ -306,16 +316,23 @@ endfunction()
 # For native builds, sycl-compiler will already include everything we need.
 # For cross builds, we also need native versions of the tools.
 set(sycl-compiler_deps
-  sycl-compiler ${clang_target} ${append-file_target}
+  ${clang_target} ${append-file_target}
   ${clang-offload-bundler_target} ${llvm-offload-binary_target}
   ${file-table-tform_target} ${llvm-foreach_target} ${llvm-spirv_target}
   ${sycl-post-link_target})
+if(TARGET sycl-compiler)
+  list(PREPEND sycl-compiler_deps sycl-compiler)
+endif()
 set(crt_obj_deps wrapper.h device.h spirv_vars.h ${sycl-compiler_deps})
 set(complex_obj_deps device_complex.h device.h ${sycl-compiler_deps})
 set(cmath_obj_deps device_math.h device.h ${sycl-compiler_deps})
 set(imf_obj_deps device_imf.hpp imf_half.hpp imf_bf16.hpp imf_rounding_op.hpp imf_impl_utils.hpp device.h ${sycl-compiler_deps})
 set(itt_obj_deps device_itt.h spirv_vars.h device.h ${sycl-compiler_deps})
-set(bfloat16_obj_deps sycl-headers ${sycl-compiler_deps})
+if(TARGET sycl-headers)
+  set(bfloat16_obj_deps sycl-headers ${sycl-compiler_deps})
+else()
+  set(bfloat16_obj_deps ${sycl-compiler_deps})
+endif()
 if (NOT MSVC AND UR_SANITIZER_INCLUDE_DIR)
   set(asan_obj_deps
     device.h atomic.hpp spirv_vars.h
@@ -839,4 +856,6 @@ add_custom_target(install-libsycldevice
   COMMAND ${CMAKE_COMMAND} -DCMAKE_INSTALL_COMPONENT=libsycldevice -P ${CMAKE_BINARY_DIR}/cmake_install.cmake
   DEPENDS ${libsycldevice_build_targets}
 )
-add_dependencies(deploy-sycl-toolchain install-libsycldevice)
+if(TARGET deploy-sycl-toolchain)
+  add_dependencies(deploy-sycl-toolchain install-libsycldevice)
+endif()
