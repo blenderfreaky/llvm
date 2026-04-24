@@ -45,17 +45,21 @@ if( LIBCLC_STANDALONE_BUILD OR CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DI
 
   find_package(LLVM REQUIRED HINTS "${LLVM_CMAKE_DIR}")
   include(AddLLVM)
+  find_package(Clang REQUIRED CONFIG)
+  list(APPEND CMAKE_MODULE_PATH ${Clang_DIR})
+  include(AddClang)
 
   message( STATUS "libclc LLVM version: ${LLVM_PACKAGE_VERSION}" )
 
   foreach( tool IN ITEMS llvm-link opt )
-    find_program( LLVM_TOOL_${tool} ${tool} PATHS ${LLVM_TOOLS_BINARY_DIR} NO_DEFAULT_PATH )
+    find_program( LLVM_TOOL_${tool} ${tool} PATHS ${LLVM_TOOLS_BINARY_DIR} )
     set( ${tool}_exe ${LLVM_TOOL_${tool}} )
     set( ${tool}_target )
   endforeach()
 
   # Setup the paths where libclc runtimes should be stored.
-  set( LIBCLC_OUTPUT_LIBRARY_DIR ${CMAKE_CURRENT_BINARY_DIR} )
+  set( LIBCLC_OUTPUT_LIBRARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/lib/clc )
+  file( MAKE_DIRECTORY ${LIBCLC_OUTPUT_LIBRARY_DIR} )
   set( LIBCLC_INSTALL_DIR ${CMAKE_INSTALL_DATADIR}/clc )
 else()
   set( LIBCLC_STANDALONE_BUILD FALSE )
