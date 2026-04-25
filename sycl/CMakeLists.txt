@@ -39,6 +39,46 @@ if (NOT XPTI_PROXY_SRC)
   set(XPTI_PROXY_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../xpti/src/xpti_proxy.cpp)
 endif()
 
+if(NOT LLVM_MAIN_SRC_DIR)
+  find_package(LLVM REQUIRED CONFIG)
+  include(AddLLVM)
+  # LLVM's CMakeLists.txt sets CMAKE_INCLUDE_CURRENT_DIR ON; standalone
+  # builds need it too (e.g. sycl-trace generated .def files).
+  set(CMAKE_INCLUDE_CURRENT_DIR ON)
+  find_package(Clang REQUIRED CONFIG)
+endif()
+
+# In standalone builds xpti/xptifw are pre-built; create imported targets so
+# existing add_dependencies() calls resolve without error.
+if(SYCL_ENABLE_XPTI_TRACING)
+  if(NOT TARGET xpti)
+    find_library(XPTI_LIBRARY NAMES xpti REQUIRED)
+    add_library(xpti STATIC IMPORTED GLOBAL)
+    set_target_properties(xpti PROPERTIES IMPORTED_LOCATION "${XPTI_LIBRARY}")
+  endif()
+  if(NOT TARGET xptifw)
+    find_library(XPTIFW_LIBRARY NAMES xptifw REQUIRED)
+    add_library(xptifw SHARED IMPORTED GLOBAL)
+    set_target_properties(xptifw PROPERTIES IMPORTED_LOCATION "${XPTIFW_LIBRARY}")
+  endif()
+endif()
+
+# sycl-jit is loaded at runtime via dlopen; a dummy target lets
+# add_dependencies() succeed without requiring an in-tree build.
+if(SYCL_ENABLE_EXTENSION_JIT AND NOT TARGET sycl-jit)
+  add_custom_target(sycl-jit)
+  add_custom_target(check-sycl-jit)
+endif()
+
+# llvm-spirv and spirv-to-ir-wrapper are installed separately in standalone
+# builds; dummy targets prevent cmake errors in DEPENDS lists.
+if(NOT TARGET llvm-spirv)
+  add_custom_target(llvm-spirv)
+endif()
+if(NOT TARGET spirv-to-ir-wrapper)
+  add_custom_target(spirv-to-ir-wrapper)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 include(AddSYCLExecutable)
 include(AddSYCL)
@@ -143,12 +183,20 @@ endif()
 set(CLANG_VERSION "${CLANG_VERSION_MAJOR}.${CLANG_VERSION_MINOR}.${CLANG_VERSION_PATCHLEVEL}")
 
 set(SYCL_INCLUDE_DIR "include")
-set(SYCL_INCLUDE_BUILD_DIR ${LLVM_BINARY_DIR}/${SYCL_INCLUDE_DIR})
+set(SYCL_INCLUDE_BUILD_DIR ${CMAKE_BINARY_DIR}/${SYCL_INCLUDE_DIR})
+include_directories(${SYCL_INCLUDE_BUILD_DIR})
 
-add_llvm_external_project(opencl)
-list(FIND LLVM_ENABLE_PROJECTS opencl OPENCL_PROJ_FOUND)
-if(OPENCL_PROJ_FOUND EQUAL -1)
-  message(FATAL_ERROR "opencl external project required but not found.")
+if(NOT LLVM_MAIN_SRC_DIR)
+  find_package(OpenCL REQUIRED)
+  find_program(OPENCL_AOT_EXECUTABLE NAMES opencl-aot
+    DOC "Path to the opencl-aot ahead-of-time compiler"
+    REQUIRED)
+else()
+  add_llvm_external_project(opencl)
+  list(FIND LLVM_ENABLE_PROJECTS opencl OPENCL_PROJ_FOUND)
+  if(OPENCL_PROJ_FOUND EQUAL -1)
+    message(FATAL_ERROR "opencl external project required but not found.")
+  endif()
 endif()
 
 if(NOT OpenCL_FOUND)
@@ -385,26 +433,28 @@ if (SYCL_ENABLE_XPTI_TRACING)
 endif()
 
 # SYCL toolchain builds all components: compiler, libraries, headers, etc.
-add_custom_target(sycl-compiler
-  DEPENDS append-file
-          clang
-          clang-offload-wrapper
-          clang-offload-bundler
-          clang-offload-deps
-          clang-offload-extract
-          llvm-offload-binary
-          clang-linker-wrapper
-          file-table-tform
-          llc
-          llvm-ar
-          llvm-foreach
-          llvm-spirv
-          llvm-link
-          llvm-objcopy
-          spirv-to-ir-wrapper
-          sycl-post-link
-          opencl-aot
-)
+set(_sycl_compiler_tool_deps
+  append-file
+  clang
+  clang-offload-wrapper
+  clang-offload-bundler
+  clang-offload-deps
+  clang-offload-extract
+  llvm-offload-binary
+  clang-linker-wrapper
+  file-table-tform
+  llc
+  llvm-ar
+  llvm-foreach
+  llvm-spirv
+  llvm-link
+  llvm-objcopy
+  spirv-to-ir-wrapper
+  sycl-post-link)
+if(LLVM_MAIN_SRC_DIR)
+  list(APPEND _sycl_compiler_tool_deps opencl-aot)
+endif()
+add_custom_target(sycl-compiler DEPENDS ${_sycl_compiler_tool_deps})
 
 add_custom_target( sycl-runtime-libraries
   DEPENDS ${SYCL_RT_LIBS}
@@ -490,7 +540,6 @@ set( SYCL_TOOLCHAIN_DEPLOY_COMPONENTS
      syclbin-dump
      clang-resource-headers
      OpenCL-Headers
-     opencl-aot
      sycl-headers
      sycl-headers-extras
      sycl
@@ -500,6 +549,9 @@ set( SYCL_TOOLCHAIN_DEPLOY_COMPONENTS
      ${XPTIFW_LIBS}
      ${SYCL_TOOLCHAIN_DEPS}
 )
+if(LLVM_MAIN_SRC_DIR)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS opencl-aot)
+endif()
 
 if("cuda" IN_LIST SYCL_ENABLE_BACKENDS)
   list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS clang-nvlink-wrapper)
@@ -535,11 +587,15 @@ if("libclc" IN_LIST LLVM_ENABLE_RUNTIMES)
 endif()
 
 if("cuda" IN_LIST SYCL_ENABLE_BACKENDS)
-  # Ensure that libclc is enabled.
-  list(FIND LLVM_ENABLE_RUNTIMES libclc LIBCLC_FOUND)
-  if( LIBCLC_FOUND EQUAL -1 )
-    message(FATAL_ERROR
-      "CUDA support requires adding \"libclc\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+  if(LLVM_MAIN_SRC_DIR)
+    # Ensure that libclc is enabled in monorepo builds.
+    list(FIND LLVM_ENABLE_RUNTIMES libclc LIBCLC_FOUND)
+    if(LIBCLC_FOUND EQUAL -1)
+      message(FATAL_ERROR
+        "CUDA support requires adding \"libclc\" to the CMake argument \"LLVM_ENABLE_RUNTIMES\"")
+    endif()
+  else()
+    set(_require_libclc TRUE)
   endif()
 
   add_dependencies(sycl-toolchain ur_adapter_cuda)
@@ -547,16 +603,20 @@ if("cuda" IN_LIST SYCL_ENABLE_BACKENDS)
 endif()
 
 if("hip" IN_LIST SYCL_ENABLE_BACKENDS)
-  # Ensure that libclc is enabled.
-  list(FIND LLVM_ENABLE_RUNTIMES libclc LIBCLC_FOUND)
-  if( LIBCLC_FOUND EQUAL -1 )
-    message(FATAL_ERROR
-      "HIP support requires adding \"libclc\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
-  endif()
-
-  if(NOT TARGET lld AND "${SYCL_BUILD_UR_HIP_PLATFORM}" STREQUAL "AMD")
-    message(FATAL_ERROR
-      "HIP support requires adding \"lld\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+  if(LLVM_MAIN_SRC_DIR)
+    # Ensure that libclc is enabled in monorepo builds.
+    list(FIND LLVM_ENABLE_RUNTIMES libclc LIBCLC_FOUND)
+    if(LIBCLC_FOUND EQUAL -1)
+      message(FATAL_ERROR
+        "HIP support requires adding \"libclc\" to the CMake argument \"LLVM_ENABLE_RUNTIMES\"")
+    endif()
+    if(NOT TARGET lld AND "${SYCL_BUILD_UR_HIP_PLATFORM}" STREQUAL "AMD")
+      message(FATAL_ERROR
+        "HIP support requires adding \"lld\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+    endif()
+  else()
+    set(_require_libclc TRUE)
+    find_package(LLD REQUIRED)
   endif()
 
   add_dependencies(sycl-toolchain ur_adapter_hip)
@@ -564,12 +624,35 @@ if("hip" IN_LIST SYCL_ENABLE_BACKENDS)
 endif()
 
 if("offload" IN_LIST SYCL_ENABLE_BACKENDS)
-  if(NOT TARGET lld)
-    message(FATAL_ERROR
-      "Offload support requires adding \"lld\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+  if(LLVM_MAIN_SRC_DIR)
+    if(NOT TARGET lld)
+      message(FATAL_ERROR
+        "Offload support requires adding \"lld\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+    endif()
+  else()
+    find_package(LLD REQUIRED)
   endif()
   add_dependencies(sycl-toolchain ur_adapter_offload)
   list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS ur_adapter_offload)
+endif()
+
+# In standalone builds, if CUDA/HIP require libclc, find prepare-builtins.
+if(NOT LLVM_MAIN_SRC_DIR AND DEFINED _require_libclc AND NOT DEFINED prepare_builtins_exe)
+  if(SYCL_PREPARE_BUILTINS_EXE)
+    set(prepare_builtins_exe "${SYCL_PREPARE_BUILTINS_EXE}")
+    set(prepare_builtins_target "")
+  else()
+    find_program(PREPARE_BUILTINS_EXE NAMES prepare-builtins)
+    if(PREPARE_BUILTINS_EXE)
+      set(prepare_builtins_exe "${PREPARE_BUILTINS_EXE}")
+      set(prepare_builtins_target "")
+    else()
+      message(FATAL_ERROR
+        "prepare-builtins is required for CUDA/HIP backends but was not found. "
+        "Install libclc (which provides prepare-builtins), or pass "
+        "-DSYCL_PREPARE_BUILTINS_EXE=<path> to cmake.")
+    endif()
+  endif()
 endif()
 
 # Use it as fake dependency in order to force another command(s) to execute.
