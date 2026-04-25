@@ -10,54 +10,62 @@ set(SYCL_JIT_VIRTUAL_TOOLCHAIN_ROOT "/sycl-jit-toolchain/")
 endif()
 
 
-if (NOT "libdevice" IN_LIST LLVM_ENABLE_PROJECTS)
-  message(FATAL_ERROR "libdevice is required for jit-compiler but not present in LLVM_ENABLE_PROJECTS")
-endif()
-
-set(SYCL_JIT_RESOURCE_INSTALL_COMPONENTS
-  sycl-headers
-  OpenCL-Headers
-  clang-resource-headers
-  libsycldevice)
-
-if ("libclc" IN_LIST LLVM_ENABLE_RUNTIMES)
-  # If some targets required `libclc` then we should embed it for the
-  # `sycl-jit`.
-  list(APPEND SYCL_JIT_RESOURCE_INSTALL_COMPONENTS libspirv-builtins)
-endif()
-
-set(SYCL_JIT_RESOURCE_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/rtc-resources-install)
-
-set(SYCL_JIT_PREPARE_RESOURCE_COMMANDS)
-set(RUNTIMES_BINARY_DIR ${CMAKE_BINARY_DIR}/runtimes/runtimes-bins)
-foreach(component IN LISTS SYCL_JIT_RESOURCE_INSTALL_COMPONENTS)
-  set(BINARY_DIR ${CMAKE_BINARY_DIR})
-  if("${component}" STREQUAL "libspirv-builtins")
-    set(BINARY_DIR ${RUNTIMES_BINARY_DIR})
-    list(APPEND SYCL_JIT_RESOURCE_DEPS libclc)
-  else()
-    list(APPEND SYCL_JIT_RESOURCE_DEPS ${component})
+if(SYCL_JIT_RESOURCE_DIR)
+  # Standalone: resources are pre-staged, skip cmake --install pipeline.
+  set(SYCL_JIT_RESOURCE_DEPS)
+  set(SYCL_JIT_RESOURCE_INSTALL_DIR "${SYCL_JIT_RESOURCE_DIR}")
+  file(GLOB_RECURSE SYCL_JIT_RESOURCE_FILES CONFIGURE_DEPENDS "${SYCL_JIT_RESOURCE_INSTALL_DIR}/*")
+  add_custom_target(rtc-prepare-resources)
+else()
+  if (NOT "libdevice" IN_LIST LLVM_ENABLE_PROJECTS)
+    message(FATAL_ERROR "libdevice is required for jit-compiler but not present in LLVM_ENABLE_PROJECTS")
   endif()
-  list(APPEND SYCL_JIT_PREPARE_RESOURCE_COMMANDS
-    COMMAND ${CMAKE_COMMAND} --install ${BINARY_DIR} --prefix ${SYCL_JIT_RESOURCE_INSTALL_DIR} --component "${component}"
+
+  set(SYCL_JIT_RESOURCE_INSTALL_COMPONENTS
+    sycl-headers
+    OpenCL-Headers
+    clang-resource-headers
+    libsycldevice)
+
+  if ("libclc" IN_LIST LLVM_ENABLE_RUNTIMES)
+    # If some targets required `libclc` then we should embed it for the
+    # `sycl-jit`.
+    list(APPEND SYCL_JIT_RESOURCE_INSTALL_COMPONENTS libspirv-builtins)
+  endif()
+
+  set(SYCL_JIT_RESOURCE_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/rtc-resources-install)
+
+  set(SYCL_JIT_PREPARE_RESOURCE_COMMANDS)
+  set(RUNTIMES_BINARY_DIR ${CMAKE_BINARY_DIR}/runtimes/runtimes-bins)
+  foreach(component IN LISTS SYCL_JIT_RESOURCE_INSTALL_COMPONENTS)
+    set(BINARY_DIR ${CMAKE_BINARY_DIR})
+    if("${component}" STREQUAL "libspirv-builtins")
+      set(BINARY_DIR ${RUNTIMES_BINARY_DIR})
+      list(APPEND SYCL_JIT_RESOURCE_DEPS libclc)
+    else()
+      list(APPEND SYCL_JIT_RESOURCE_DEPS ${component})
+    endif()
+    list(APPEND SYCL_JIT_PREPARE_RESOURCE_COMMANDS
+      COMMAND ${CMAKE_COMMAND} --install ${BINARY_DIR} --prefix ${SYCL_JIT_RESOURCE_INSTALL_DIR} --component "${component}"
+    )
+  endforeach()
+
+    # OpenCL-Headers doesn't have a corresponding build target:
+  list(FILTER SYCL_JIT_RESOURCE_DEPS EXCLUDE REGEX "^OpenCL-Headers$")
+
+  # This is very hacky and I don't quite know what I'm doing, but it's necessary
+  # to have `resource.cpp` re-generated/re-built when some SYCL header changes.
+  #
+  # Inspired by the way `sycl-headers` target is created.
+  file(GLOB_RECURSE SYCL_JIT_RESOURCE_FILES CONFIGURE_DEPENDS "${SYCL_JIT_RESOURCE_INSTALL_DIR}/*" )
+
+  add_custom_target(rtc-prepare-resources
+    DEPENDS ${SYCL_JIT_RESOURCE_DEPS}
+    ${SYCL_JIT_PREPARE_RESOURCE_COMMANDS}
+    BYPRODUCTS
+    ${SYCL_JIT_RESOURCE_FILES}
   )
-endforeach()
-
-  # OpenCL-Headers doesn't have a corresponding build target:
-list(FILTER SYCL_JIT_RESOURCE_DEPS EXCLUDE REGEX "^OpenCL-Headers$")
-
-# This is very hacky and I don't quite know what I'm doing, but it's necessary
-# to have `resource.cpp` re-generated/re-built when some SYCL header changes.
-#
-# Inspired by the way `sycl-headers` target is created.
-file(GLOB_RECURSE SYCL_JIT_RESOURCE_FILES CONFIGURE_DEPENDS "${SYCL_JIT_RESOURCE_INSTALL_DIR}/*" )
-
-add_custom_target(rtc-prepare-resources
-  DEPENDS ${SYCL_JIT_RESOURCE_DEPS}
-  ${SYCL_JIT_PREPARE_RESOURCE_COMMANDS}
-  BYPRODUCTS
-  ${SYCL_JIT_RESOURCE_FILES}
-)
+endif()
 
 add_custom_command(
   OUTPUT ${SYCL_JIT_RESOURCE_CPP}
@@ -176,12 +184,18 @@ target_compile_options(sycl-jit PRIVATE ${SYCL_JIT_WARNING_FLAGS})
 # Mark LLVM and SPIR-V headers as system headers to ignore warnigns in them.
 # This classification remains intact even if the same paths are added as normal
 # include paths in GCC and Clang.
+if(CLANG_INCLUDE_DIRS)
+  set(_SYCL_JIT_CLANG_INCLUDES ${CLANG_INCLUDE_DIRS})
+else()
+  set(_SYCL_JIT_CLANG_INCLUDES
+    ${LLVM_EXTERNAL_CLANG_SOURCE_DIR}/include
+    ${CMAKE_BINARY_DIR}/tools/clang/include)
+endif()
 target_include_directories(sycl-jit
   SYSTEM PRIVATE
   ${LLVM_MAIN_INCLUDE_DIR}
   ${LLVM_SPIRV_INCLUDE_DIRS}
-  ${LLVM_EXTERNAL_CLANG_SOURCE_DIR}/include
-  ${CMAKE_BINARY_DIR}/tools/clang/include
+  ${_SYCL_JIT_CLANG_INCLUDES}
 )
 target_include_directories(sycl-jit
   PUBLIC
